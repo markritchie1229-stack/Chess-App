@@ -1,0 +1,82 @@
+#!/usr/bin/env python3
+
+import json
+from pathlib import Path
+
+import chess
+import chess.engine
+
+INPUT_FILE = Path("mate_in_1.json")
+OUTPUT_FILE = Path("mate_in_1.filtered.json")
+STOCKFISH_PATH = "stockfish"
+
+ENGINE_DEPTH = 8
+ROOT_MULTIPV = 2
+
+
+def score_to_cp(score):
+    if score.is_mate():
+        m = score.mate()
+        if m is None:
+            return 0
+        return 100000 if m > 0 else -100000
+    return score.score(mate_score=100000)
+
+
+engine = chess.engine.SimpleEngine.popen_uci(STOCKFISH_PATH)
+
+data = json.loads(INPUT_FILE.read_text())
+
+kept = []
+removed = []
+
+try:
+    for item in data:
+        try:
+            board = chess.Board(item["fen"])
+            move = chess.Move.from_uci(item["solution"])
+
+            if not board.is_legal(move):
+                removed.append((item, "illegal solution"))
+                continue
+
+            # Verify the move is actually mate.
+            board.push(move)
+
+            if not board.is_checkmate():
+                removed.append((item, "not mate in 1"))
+                continue
+
+            board.pop()
+
+            # Optional: require the solution to be uniquely best.
+            info = engine.analyse(
+                board,
+                chess.engine.Limit(depth=ENGINE_DEPTH),
+                multipv=ROOT_MULTIPV,
+            )
+
+            if not isinstance(info, list):
+                info = [info]
+
+            if len(info) >= 2:
+                best = score_to_cp(info[0]["score"].pov(board.turn))
+                second = score_to_cp(info[1]["score"].pov(board.turn))
+
+                # If the second-best move is also mate, reject.
+                if second >= 100000:
+                    removed.append((item, "multiple mating moves"))
+                    continue
+
+            kept.append(item)
+
+        except Exception as e:
+            removed.append((item, str(e)))
+
+finally:
+    engine.quit()
+
+OUTPUT_FILE.write_text(json.dumps(kept, indent=2))
+
+print(f"Kept {len(kept)} of {len(data)} puzzles")
+print(f"Wrote {OUTPUT_FILE}")
